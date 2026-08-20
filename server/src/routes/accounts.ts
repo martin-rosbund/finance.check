@@ -22,6 +22,8 @@ const bodySchema = z.object({
   totalValuationCents: z.number().int().nonnegative().max(100_000_000_000_00).nullable().default(null),
   valuationDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().default(null),
   linkedAssetId: z.number().int().positive().nullable().default(null),
+  fundingEligible: z.boolean().default(false),
+  fundingAvailableFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().default(null),
   color: z.string().regex(/^#[0-9a-fA-F]{6}$/).default('#6366f1'),
 });
 
@@ -31,6 +33,10 @@ const nonLiquidAssetKinds = new Set(['property', 'company_share']);
 const appreciatingAssetKinds = new Set(['investment', 'property', 'company_share']);
 const cashAssetKinds = new Set(['checking', 'savings', 'investment']);
 type AccountBody = z.infer<typeof bodySchema>;
+const databaseParameters = (body: ReturnType<typeof normalize>) => ({
+  ...body,
+  fundingEligible: body.fundingEligible ? 1 : 0,
+});
 
 const normalize = (body: AccountBody, ownId?: number) => {
   const liability = liabilityKinds.has(body.kind);
@@ -55,6 +61,8 @@ const normalize = (body: AccountBody, ownId?: number) => {
     totalValuationCents,
     valuationDate: nonLiquidAsset ? body.valuationDate : null,
     linkedAssetId: liability ? body.linkedAssetId : null,
+    fundingEligible: cashAsset ? body.fundingEligible : false,
+    fundingAvailableFrom: cashAsset && body.fundingEligible ? body.fundingAvailableFrom : null,
   };
 };
 
@@ -98,12 +106,12 @@ export async function accountRoutes(app: FastifyInstance) {
         INSERT INTO accounts (name, kind, balance_cents, monthly_savings_cents, monthly_savings_source_account_id,
           annual_bonus_cents, annual_bonus_month, annual_bonus_target_account_id, monthly_payment_cents,
           monthly_payment_source_account_id, annual_rate, expected_annual_return, ownership_percent,
-          total_valuation_cents, valuation_date, linked_asset_id, color)
+          total_valuation_cents, valuation_date, linked_asset_id, funding_eligible, funding_available_from, color)
         VALUES (@name, @kind, @balanceCents, @monthlySavingsCents, @monthlySavingsSourceAccountId,
           @annualBonusCents, @annualBonusMonth, @annualBonusTargetAccountId, @monthlyPaymentCents,
           @monthlyPaymentSourceAccountId, @annualRate, @expectedAnnualReturn, @ownershipPercent,
-          @totalValuationCents, @valuationDate, @linkedAssetId, @color)
-      `).run(body);
+          @totalValuationCents, @valuationDate, @linkedAssetId, @fundingEligible, @fundingAvailableFrom, @color)
+      `).run(databaseParameters(body));
       const newId = Number(result.lastInsertRowid);
       if (body.annualBonusCents > 0 && body.annualBonusTargetAccountId === null) {
         db.prepare('UPDATE accounts SET annual_bonus_target_account_id = ? WHERE id = ?').run(newId, newId);
@@ -126,8 +134,9 @@ export async function accountRoutes(app: FastifyInstance) {
         monthly_payment_cents=@monthlyPaymentCents, monthly_payment_source_account_id=@monthlyPaymentSourceAccountId,
         annual_rate=@annualRate, expected_annual_return=@expectedAnnualReturn, ownership_percent=@ownershipPercent,
         total_valuation_cents=@totalValuationCents, valuation_date=@valuationDate, linked_asset_id=@linkedAssetId,
+        funding_eligible=@fundingEligible, funding_available_from=@fundingAvailableFrom,
         color=@color, updated_at=CURRENT_TIMESTAMP WHERE id=@id
-    `).run({ ...body, id });
+    `).run({ ...databaseParameters(body), id });
     if (!result.changes) return reply.code(404).send({ message: 'Konto nicht gefunden.' });
     return mapAccount(db.prepare('SELECT * FROM accounts WHERE id = ?').get(id) as never);
   });

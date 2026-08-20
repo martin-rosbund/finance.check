@@ -1,7 +1,8 @@
-import type { Account, InvestmentScenarioInput, ProjectionPoint, RecurringFlow, StrategyResult } from '../types.js';
+import type { Account, FundingPlan, InvestmentScenarioInput, ProjectionPoint, RecurringFlow, StrategyResult } from '../types.js';
 
 const liabilityKinds = new Set<Account['kind']>(['loan', 'mortgage']);
 const appreciatingAssetKinds = new Set<Account['kind']>(['investment', 'property', 'company_share']);
+const cashAssetKinds = new Set<Account['kind']>(['checking', 'savings', 'investment']);
 const monthsPerFlow = { weekly: 12 / 52, monthly: 1, quarterly: 3, yearly: 12 } as const;
 const monthKey = (date: Date) => `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-01`;
 const addMonths = (date: Date, amount: number) => new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + amount, 1));
@@ -91,6 +92,46 @@ const loanPayment = (principal: number, annualRate: number, months: number) => {
   return rate === 0 ? principal / months : principal * rate / (1 - Math.pow(1 + rate, -months));
 };
 
+export function createFundingPlan(accounts: Account[], input: { investmentCents: number; expectedAnnualReturn: number; loanAnnualRate: number; loanTermYears: number; useOwnFunds?: boolean }, asOf = new Date()): FundingPlan {
+  const asOfDate = asOf.toISOString().slice(0, 10);
+  const candidates = input.useOwnFunds === false ? [] : accounts.filter((account) => cashAssetKinds.has(account.kind) && account.fundingEligible && account.balanceCents > 0);
+  const deferredAccounts = candidates.filter((account) => account.fundingAvailableFrom && account.fundingAvailableFrom > asOfDate).map((account) => ({
+    accountId: account.id, name: account.name, balanceCents: account.balanceCents, availableFrom: account.fundingAvailableFrom!,
+  }));
+  const available = candidates.filter((account) => !account.fundingAvailableFrom || account.fundingAvailableFrom <= asOfDate).map((account) => ({
+    account,
+    opportunityRate: account.annualRate + (account.kind === 'investment' ? account.expectedAnnualReturn : 0),
+  })).sort((a, b) => a.opportunityRate - b.opportunityRate || a.account.balanceCents - b.account.balanceCents);
+
+  let remainingCents = input.investmentCents;
+  const sources: FundingPlan['sources'] = [];
+  for (const candidate of available) {
+    if (remainingCents <= 0) break;
+    if (candidate.opportunityRate > input.loanAnnualRate) continue;
+    const amountCents = Math.min(candidate.account.balanceCents, remainingCents);
+    sources.push({ accountId: candidate.account.id, name: candidate.account.name, amountCents, opportunityRate: candidate.opportunityRate });
+    remainingCents -= amountCents;
+  }
+
+  const ownFundsCents = input.investmentCents - remainingCents;
+  const loanCents = remainingCents;
+  const termMonths = Math.max(1, Math.round(input.loanTermYears * 12));
+  const monthlyPayment = loanPayment(loanCents, input.loanAnnualRate, termMonths);
+  const totalLoanRepaymentCents = Math.round(monthlyPayment * termMonths);
+  const totalLoanInterestCents = Math.max(0, totalLoanRepaymentCents - loanCents);
+  const expensiveAvailable = available.filter((candidate) => candidate.opportunityRate > input.loanAnnualRate);
+  const parts = input.useOwnFunds === false
+    ? ['Eigenmittel sind für dieses Szenario ausgeschlossen; die Investition wird daher vollständig finanziert.']
+    : loanCents === 0
+    ? ['Die Investition kann vollständig aus freigegebenen, aktuell verfügbaren Konten gedeckt werden.']
+    : ownFundsCents === 0
+      ? ['Die freigegebenen Mittel sind derzeit gesperrt oder ihre erwartete Verzinsung liegt über dem Kreditzins; daher wird rechnerisch vollständig finanziert.']
+      : ['Niedriger verzinste verfügbare Mittel werden zuerst eingesetzt; nur der verbleibende Betrag wird finanziert.'];
+  if (expensiveAvailable.length) parts.push(`${expensiveAvailable.length} freigegebene${expensiveAvailable.length === 1 ? 's Konto wird' : ' Konten werden'} wegen höherer erwarteter Verzinsung nicht angetastet.`);
+  if (loanCents > 0 && input.expectedAnnualReturn <= input.loanAnnualRate) parts.push('Die erwartete Investitionsrendite liegt nicht über dem Kreditzins; der finanzierte Teil ist unter diesen Annahmen rechnerisch nicht renditevorteilhaft.');
+  return { investmentCents: input.investmentCents, ownFundsCents, loanCents, monthlyLoanPaymentCents: Math.round(monthlyPayment), totalLoanInterestCents, totalLoanRepaymentCents, sources, deferredAccounts, explanation: parts.join(' ') };
+}
+
 const loanInterestPaid = (principal: number, annualRate: number, termMonths: number, elapsedMonths: number) => {
   if (principal <= 0 || elapsedMonths <= 0 || annualRate === 0) return 0;
   const month = Math.min(elapsedMonths, termMonths);
@@ -114,32 +155,38 @@ export function compareStrategies(input: InvestmentScenarioInput): StrategyResul
 
   return strategies.map((strategy) => {
     const monthlyPayment = loanPayment(strategy.loan, input.loanAnnualRate, termMonths);
-    const totalLoanPayments = monthlyPayment * termMonths;
-    const financingCost = Math.max(0, totalLoanPayments - strategy.loan);
+    const financingCost = loanInterestPaid(strategy.loan, input.loanAnnualRate, termMonths, horizonMonths);
     const opportunityCost = Math.max(0, compound(strategy.savings, input.savingsAnnualRate, horizonMonths) - strategy.savings);
+    const totalSavingsBenefit = strategy.key === 'wait' ? 0 : input.monthlyCostSavingsCents * horizonMonths;
     const series: { month: number; valueCents: number }[] = [];
-    let breakEvenMonth: number | null = strategy.key === 'wait' ? 0 : null;
+    let wealthBreakEvenMonth: number | null = strategy.key === 'wait' ? 0 : null;
     for (let month = 0; month <= horizonMonths; month += 1) {
-      const investmentValue = strategy.key === 'wait' ? 0 : compound(input.investmentCents, input.expectedAnnualReturn, month);
-      const paidInterest = loanInterestPaid(strategy.loan, input.loanAnnualRate, termMonths, month);
-      const lostSavingsYield = strategy.savings > 0 ? Math.max(0, compound(strategy.savings, input.savingsAnnualRate, month) - strategy.savings) : 0;
-      const valueCents = investmentValue - input.investmentCents - paidInterest - lostSavingsYield;
+      const valueCents = strategy.key === 'wait'
+        ? compound(input.investmentCents, input.savingsAnnualRate, month) - input.investmentCents
+        : compound(input.investmentCents, input.expectedAnnualReturn, month) - input.investmentCents
+          - loanInterestPaid(strategy.loan, input.loanAnnualRate, termMonths, month)
+          - (strategy.savings > 0 ? Math.max(0, compound(strategy.savings, input.savingsAnnualRate, month) - strategy.savings) : 0)
+          + input.monthlyCostSavingsCents * month;
       series.push({ month, valueCents: Math.round(valueCents) });
-      if (breakEvenMonth === null && valueCents >= 0 && month > 0) breakEvenMonth = month;
+      if (wealthBreakEvenMonth === null && valueCents >= 0 && month > 0) wealthBreakEvenMonth = month;
     }
     const finalValue = strategy.key === 'wait' ? compound(input.investmentCents, input.savingsAnnualRate, horizonMonths) : compound(input.investmentCents, input.expectedAnnualReturn, horizonMonths);
     const netAdvantage = strategy.key === 'wait'
       ? finalValue - input.investmentCents
-      : finalValue - input.investmentCents - financingCost - opportunityCost;
+      : finalValue - input.investmentCents - financingCost - opportunityCost + totalSavingsBenefit;
+    const totalCashOutlay = strategy.savings + monthlyPayment * termMonths;
+    const amortizationMonth = strategy.key === 'wait' || input.monthlyCostSavingsCents <= 0
+      ? null
+      : Math.ceil(totalCashOutlay / input.monthlyCostSavingsCents);
     return {
       key: strategy.key, label: strategy.label, feasible: strategy.feasible,
       finalValueCents: Math.round(finalValue), financingCostCents: Math.round(financingCost),
-      opportunityCostCents: Math.round(opportunityCost), netAdvantageCents: Math.round(netAdvantage),
-      breakEvenMonth, monthlyLoanPaymentCents: Math.round(monthlyPayment), series,
-      explanation: strategy.key === 'savings' ? 'Keine Kreditkosten, dafür entgeht die Verzinsung des eingesetzten Kapitals.'
-        : strategy.key === 'loan' ? 'Das Vermögen bleibt angelegt; die Kreditkosten müssen von der Rendite geschlagen werden.'
-        : strategy.key === 'hybrid' ? 'Teilt Kredit- und Opportunitätskosten und reduziert das Einzelrisiko.'
-        : 'Referenz: Das Kapital bleibt zum Sparzins angelegt.',
+      opportunityCostCents: Math.round(opportunityCost), totalSavingsBenefitCents: Math.round(totalSavingsBenefit), netAdvantageCents: Math.round(netAdvantage),
+      wealthBreakEvenMonth, amortizationMonth, monthlyLoanPaymentCents: Math.round(monthlyPayment), series,
+      explanation: strategy.key === 'savings' ? 'Keine Kreditkosten; laufende Einsparungen wirken als Nutzen, dafür entgeht die Verzinsung des eingesetzten Kapitals.'
+        : strategy.key === 'loan' ? 'Das Vermögen bleibt angelegt; laufende Einsparungen und Rendite müssen die Kreditkosten schlagen.'
+        : strategy.key === 'hybrid' ? 'Laufende Einsparungen wirken vollständig, während Kredit- und Opportunitätskosten geteilt werden.'
+        : 'Referenz ohne Investition: Das Kapital bleibt zum Sparzins angelegt, die erwartete monatliche Einsparung entsteht nicht.',
     };
   }).sort((a, b) => Number(b.feasible) - Number(a.feasible) || b.netAdvantageCents - a.netAdvantageCents);
 }

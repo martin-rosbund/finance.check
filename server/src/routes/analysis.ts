@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { db } from '../db/database.js';
 import { mapAccount, mapFlow } from '../db/mappers.js';
-import { compareStrategies, projectPortfolio } from '../services/finance.js';
+import { compareStrategies, createFundingPlan, projectPortfolio } from '../services/finance.js';
 
 const percentage = (minimum: number) => z.number().min(minimum).max(1000).refine(
   (value) => Math.abs(value * 10_000 - Math.round(value * 10_000)) < 1e-8,
@@ -12,11 +12,20 @@ const percentage = (minimum: number) => z.number().min(minimum).max(1000).refine
 const scenarioSchema = z.object({
   investmentCents: z.number().int().positive().max(100_000_000_000_00),
   availableSavingsCents: z.number().int().nonnegative().max(100_000_000_000_00),
+  monthlyCostSavingsCents: z.number().int().nonnegative().max(100_000_000_000_00).default(0),
   expectedAnnualReturn: percentage(-100),
   savingsAnnualRate: percentage(-100),
   loanAnnualRate: percentage(0),
   loanTermYears: z.number().positive().max(50),
   horizonYears: z.number().positive().max(60),
+});
+
+const fundingPlanSchema = z.object({
+  investmentCents: z.number().int().positive().max(100_000_000_000_00),
+  expectedAnnualReturn: percentage(-100),
+  loanAnnualRate: percentage(0),
+  loanTermYears: z.number().positive().max(50),
+  useOwnFunds: z.boolean().default(true),
 });
 
 const monthlyAmount = (amount: number, frequency: string) => ({ weekly: amount * 52 / 12, monthly: amount, quarterly: amount / 3, yearly: amount / 12 }[frequency] ?? amount);
@@ -47,6 +56,12 @@ export async function analysisRoutes(app: FastifyInstance) {
 
   app.post('/api/scenarios/compare', async (request) => compareStrategies(scenarioSchema.parse(request.body)));
 
+  app.post('/api/scenarios/funding-plan', async (request) => {
+    const input = fundingPlanSchema.parse(request.body);
+    const accounts = db.prepare('SELECT * FROM accounts ORDER BY kind, name').all().map((row) => mapAccount(row as never));
+    return createFundingPlan(accounts, input);
+  });
+
   app.post('/api/demo', async (_request, reply) => {
     const count = db.prepare('SELECT COUNT(*) AS count FROM accounts').get() as { count: number };
     if (count.count > 0) return reply.code(409).send({ message: 'Demo-Daten können nur in eine leere Datenbank eingefügt werden.' });
@@ -55,15 +70,16 @@ export async function analysisRoutes(app: FastifyInstance) {
         (name, kind, balance_cents, monthly_savings_cents, monthly_savings_source_account_id,
           annual_bonus_cents, annual_bonus_month, annual_bonus_target_account_id,
           monthly_payment_cents, monthly_payment_source_account_id, annual_rate, expected_annual_return,
-          ownership_percent, total_valuation_cents, valuation_date, linked_asset_id, color)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+          ownership_percent, total_valuation_cents, valuation_date, linked_asset_id,
+          funding_eligible, funding_available_from, color)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
       const today = new Date().toISOString().slice(0, 10);
-      const giro = Number(insertAccount.run('Girokonto', 'checking', 425000, 0, null, 0, 12, null, 0, null, 0, 0, 100, null, null, null, '#8b5cf6').lastInsertRowid);
-      insertAccount.run('Tagesgeld', 'savings', 1850000, 25000, giro, 0, 12, null, 0, null, 2.4, 0, 100, null, null, null, '#14b8a6');
-      const etf = Number(insertAccount.run('ETF-Depot', 'investment', 3260000, 40000, giro, 150000, 12, null, 0, null, 0, 6.5, 100, null, null, null, '#f59e0b').lastInsertRowid);
+      const giro = Number(insertAccount.run('Girokonto', 'checking', 425000, 0, null, 0, 12, null, 0, null, 0, 0, 100, null, null, null, 1, null, '#8b5cf6').lastInsertRowid);
+      insertAccount.run('Tagesgeld', 'savings', 1850000, 25000, giro, 0, 12, null, 0, null, 2.4, 0, 100, null, null, null, 1, null, '#14b8a6');
+      const etf = Number(insertAccount.run('ETF-Depot', 'investment', 3260000, 40000, giro, 150000, 12, null, 0, null, 0, 6.5, 100, null, null, null, 0, null, '#f59e0b').lastInsertRowid);
       db.prepare('UPDATE accounts SET annual_bonus_target_account_id = ? WHERE id = ?').run(etf, etf);
-      const property = Number(insertAccount.run('Eigenheim', 'property', 32000000, 0, null, 0, 12, null, 0, null, 0, 1, 100, 32000000, today, null, '#3b82f6').lastInsertRowid);
-      insertAccount.run('Immobilienkredit', 'mortgage', 11800000, 0, null, 0, 12, null, 72000, giro, 3.1, 0, 100, null, null, property, '#f97316');
+      const property = Number(insertAccount.run('Eigenheim', 'property', 32000000, 0, null, 0, 12, null, 0, null, 0, 1, 100, 32000000, today, null, 0, null, '#3b82f6').lastInsertRowid);
+      insertAccount.run('Immobilienkredit', 'mortgage', 11800000, 0, null, 0, 12, null, 72000, giro, 3.1, 0, 100, null, null, property, 0, null, '#f97316');
       const insertFlow = db.prepare('INSERT INTO recurring_flows (name, kind, amount_cents, frequency, start_date, account_id, category) VALUES (?, ?, ?, ?, ?, ?, ?)');
       insertFlow.run('Gehalt', 'income', 390000, 'monthly', today, giro, 'Einkommen');
       insertFlow.run('Lebenshaltung', 'expense', 185000, 'monthly', today, giro, 'Alltag');

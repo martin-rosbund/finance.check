@@ -18,6 +18,8 @@ export type Account = {
   totalValuationCents: number | null;
   valuationDate: string | null;
   linkedAssetId: number | null;
+  fundingEligible: boolean;
+  fundingAvailableFrom: string | null;
   color: string;
   createdAt: string;
   updatedAt: string;
@@ -56,11 +58,32 @@ export type ProjectionPoint = {
 export type InvestmentScenarioInput = {
   investmentCents: number;
   availableSavingsCents: number;
+  monthlyCostSavingsCents: number;
   expectedAnnualReturn: number;
   savingsAnnualRate: number;
   loanAnnualRate: number;
   loanTermYears: number;
   horizonYears: number;
+};
+
+export type SavedInvestmentScenario = Omit<InvestmentScenarioInput, 'availableSavingsCents' | 'savingsAnnualRate'> & {
+  id: number;
+  name: string;
+  useOwnFunds: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type FundingPlan = {
+  investmentCents: number;
+  ownFundsCents: number;
+  loanCents: number;
+  monthlyLoanPaymentCents: number;
+  totalLoanInterestCents: number;
+  totalLoanRepaymentCents: number;
+  sources: { accountId: number; name: string; amountCents: number; opportunityRate: number }[];
+  deferredAccounts: { accountId: number; name: string; balanceCents: number; availableFrom: string }[];
+  explanation: string;
 };
 
 export type StrategyResult = {
@@ -70,8 +93,10 @@ export type StrategyResult = {
   finalValueCents: number;
   financingCostCents: number;
   opportunityCostCents: number;
+  totalSavingsBenefitCents: number;
   netAdvantageCents: number;
-  breakEvenMonth: number | null;
+  wealthBreakEvenMonth: number | null;
+  amortizationMonth: number | null;
   monthlyLoanPaymentCents: number;
   series: { month: number; valueCents: number }[];
   explanation: string;
