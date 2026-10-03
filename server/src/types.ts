@@ -57,6 +57,7 @@ export type ProjectionPoint = {
 
 export type InvestmentScenarioInput = {
   investmentCents: number;
+  minimumLoanCents: number;
   availableSavingsCents: number;
   monthlyCostSavingsCents: number;
   expectedAnnualReturn: number;
@@ -77,7 +78,10 @@ export type SavedInvestmentScenario = Omit<InvestmentScenarioInput, 'availableSa
 export type FundingPlan = {
   investmentCents: number;
   ownFundsCents: number;
+  grossLoanCents: number;
+  immediateSpecialRepaymentCents: number;
   loanCents: number;
+  actualLoanTermMonths: number;
   monthlyLoanPaymentCents: number;
   totalLoanInterestCents: number;
   totalLoanRepaymentCents: number;
@@ -97,6 +101,9 @@ export type StrategyResult = {
   netAdvantageCents: number;
   wealthBreakEvenMonth: number | null;
   amortizationMonth: number | null;
+  grossLoanCents: number;
+  immediateSpecialRepaymentCents: number;
+  actualLoanTermMonths: number;
   monthlyLoanPaymentCents: number;
   series: { month: number; valueCents: number }[];
   explanation: string;

@@ -11,6 +11,7 @@ const percentage = (minimum: number) => z.number().min(minimum).max(1000).refine
 
 const scenarioSchema = z.object({
   investmentCents: z.number().int().positive().max(100_000_000_000_00),
+  minimumLoanCents: z.number().int().nonnegative().max(100_000_000_000_00).default(0),
   availableSavingsCents: z.number().int().nonnegative().max(100_000_000_000_00),
   monthlyCostSavingsCents: z.number().int().nonnegative().max(100_000_000_000_00).default(0),
   expectedAnnualReturn: percentage(-100),
@@ -22,6 +23,7 @@ const scenarioSchema = z.object({
 
 const fundingPlanSchema = z.object({
   investmentCents: z.number().int().positive().max(100_000_000_000_00),
+  minimumLoanCents: z.number().int().nonnegative().max(100_000_000_000_00).default(0),
   expectedAnnualReturn: percentage(-100),
   loanAnnualRate: percentage(0),
   loanTermYears: z.number().positive().max(50),

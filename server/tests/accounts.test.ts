@@ -49,7 +49,7 @@ describe('API persistence', () => {
   });
 
   it('creates, lists, updates and deletes investment scenarios', async () => {
-    const body = { name: 'Wärmepumpe', investmentCents: 18_000_00, monthlyCostSavingsCents: 120_00, expectedAnnualReturn: 0, loanAnnualRate: 4.2, loanTermYears: 10, horizonYears: 20 };
+    const body = { name: 'Wärmepumpe', investmentCents: 18_000_00, minimumLoanCents: 25_000_00, monthlyCostSavingsCents: 120_00, expectedAnnualReturn: 0, loanAnnualRate: 4.2, loanTermYears: 10, horizonYears: 20 };
     const created = await app.inject({ method: 'POST', url: '/api/investment-scenarios', payload: body });
     expect(created.statusCode).toBe(201);
     expect(created.json()).toMatchObject({ ...body, useOwnFunds: true });

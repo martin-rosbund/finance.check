@@ -11,6 +11,7 @@ const percentage = (minimum: number) => z.number().min(minimum).max(1000).refine
 const scenarioBodySchema = z.object({
   name: z.string().trim().min(1).max(100),
   investmentCents: z.number().int().positive().max(100_000_000_000_00),
+  minimumLoanCents: z.number().int().nonnegative().max(100_000_000_000_00).default(0),
   monthlyCostSavingsCents: z.number().int().nonnegative().max(100_000_000_000_00),
   expectedAnnualReturn: percentage(-100),
   loanAnnualRate: percentage(0),
@@ -20,7 +21,7 @@ const scenarioBodySchema = z.object({
 });
 
 type ScenarioRow = {
-  id: number; name: string; investment_cents: number; monthly_cost_savings_cents: number;
+  id: number; name: string; investment_cents: number; minimum_loan_cents: number; monthly_cost_savings_cents: number;
   expected_annual_return: number; loan_annual_rate: number; loan_term_years: number;
   horizon_years: number; use_own_funds: number; created_at: string; updated_at: string;
 };
@@ -29,6 +30,7 @@ const mapScenario = (row: ScenarioRow): SavedInvestmentScenario => ({
   id: row.id,
   name: row.name,
   investmentCents: row.investment_cents,
+  minimumLoanCents: row.minimum_loan_cents,
   monthlyCostSavingsCents: row.monthly_cost_savings_cents,
   expectedAnnualReturn: row.expected_annual_return,
   loanAnnualRate: row.loan_annual_rate,
@@ -48,8 +50,8 @@ export async function investmentScenarioRoutes(app: FastifyInstance) {
     const body = scenarioBodySchema.parse(request.body);
     const result = db.prepare(`
       INSERT INTO investment_scenarios
-        (name, investment_cents, monthly_cost_savings_cents, expected_annual_return, loan_annual_rate, loan_term_years, horizon_years, use_own_funds)
-      VALUES (@name, @investmentCents, @monthlyCostSavingsCents, @expectedAnnualReturn, @loanAnnualRate, @loanTermYears, @horizonYears, @useOwnFunds)
+        (name, investment_cents, minimum_loan_cents, monthly_cost_savings_cents, expected_annual_return, loan_annual_rate, loan_term_years, horizon_years, use_own_funds)
+      VALUES (@name, @investmentCents, @minimumLoanCents, @monthlyCostSavingsCents, @expectedAnnualReturn, @loanAnnualRate, @loanTermYears, @horizonYears, @useOwnFunds)
     `).run({ ...body, useOwnFunds: body.useOwnFunds ? 1 : 0 });
     const row = db.prepare('SELECT * FROM investment_scenarios WHERE id = ?').get(Number(result.lastInsertRowid));
     return reply.code(201).send(mapScenario(row as ScenarioRow));
@@ -60,6 +62,7 @@ export async function investmentScenarioRoutes(app: FastifyInstance) {
     const body = scenarioBodySchema.parse(request.body);
     const result = db.prepare(`
       UPDATE investment_scenarios SET name=@name, investment_cents=@investmentCents,
+        minimum_loan_cents=@minimumLoanCents,
         monthly_cost_savings_cents=@monthlyCostSavingsCents, expected_annual_return=@expectedAnnualReturn,
         loan_annual_rate=@loanAnnualRate, loan_term_years=@loanTermYears, horizon_years=@horizonYears,
         use_own_funds=@useOwnFunds,

@@ -54,6 +54,7 @@ db.exec(`
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
     investment_cents INTEGER NOT NULL CHECK (investment_cents > 0),
+    minimum_loan_cents INTEGER NOT NULL DEFAULT 0 CHECK (minimum_loan_cents >= 0),
     monthly_cost_savings_cents INTEGER NOT NULL DEFAULT 0 CHECK (monthly_cost_savings_cents >= 0),
     expected_annual_return REAL NOT NULL DEFAULT 0,
     loan_annual_rate REAL NOT NULL DEFAULT 0 CHECK (loan_annual_rate >= 0),
@@ -176,6 +177,9 @@ if (!accountColumns.some((column) => column.name === 'funding_available_from')) 
 const investmentScenarioColumns = db.prepare('PRAGMA table_info(investment_scenarios)').all() as { name: string }[];
 if (!investmentScenarioColumns.some((column) => column.name === 'use_own_funds')) {
   db.exec('ALTER TABLE investment_scenarios ADD COLUMN use_own_funds INTEGER NOT NULL DEFAULT 1 CHECK (use_own_funds IN (0, 1))');
+}
+if (!investmentScenarioColumns.some((column) => column.name === 'minimum_loan_cents')) {
+  db.exec('ALTER TABLE investment_scenarios ADD COLUMN minimum_loan_cents INTEGER NOT NULL DEFAULT 0 CHECK (minimum_loan_cents >= 0)');
 }
 const investmentScenarioIndex = db.prepare("SELECT sql FROM sqlite_schema WHERE type = 'index' AND name = 'idx_investment_scenarios_updated_at'").get() as { sql: string } | undefined;
 if (!investmentScenarioIndex?.sql.includes('id DESC')) {

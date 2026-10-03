@@ -14,18 +14,19 @@ export type StrategyResult = {
   key: 'savings' | 'loan' | 'hybrid' | 'wait'; label: string; feasible: boolean;
   finalValueCents: number; financingCostCents: number; opportunityCostCents: number;
   totalSavingsBenefitCents: number;
-  netAdvantageCents: number; wealthBreakEvenMonth: number | null; amortizationMonth: number | null; monthlyLoanPaymentCents: number;
+  netAdvantageCents: number; wealthBreakEvenMonth: number | null; amortizationMonth: number | null;
+  grossLoanCents: number; immediateSpecialRepaymentCents: number; actualLoanTermMonths: number; monthlyLoanPaymentCents: number;
   series: { month: number; valueCents: number }[]; explanation: string;
 };
 export type FundingPlan = {
-  investmentCents: number; ownFundsCents: number; loanCents: number;
+  investmentCents: number; ownFundsCents: number; grossLoanCents: number; immediateSpecialRepaymentCents: number; loanCents: number; actualLoanTermMonths: number;
   monthlyLoanPaymentCents: number; totalLoanInterestCents: number; totalLoanRepaymentCents: number;
   sources: { accountId: number; name: string; amountCents: number; opportunityRate: number }[];
   deferredAccounts: { accountId: number; name: string; balanceCents: number; availableFrom: string }[];
   explanation: string;
 };
 export type SavedInvestmentScenario = {
-  id: number; name: string; investmentCents: number; monthlyCostSavingsCents: number;
+  id: number; name: string; investmentCents: number; minimumLoanCents: number; monthlyCostSavingsCents: number;
   expectedAnnualReturn: number; loanAnnualRate: number; loanTermYears: number; horizonYears: number;
   useOwnFunds: boolean;
   createdAt: string; updatedAt: string;

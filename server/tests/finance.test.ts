@@ -102,19 +102,19 @@ describe('createFundingPlan', () => {
 
 describe('compareStrategies', () => {
   it('marks savings as infeasible when capital is insufficient', () => {
-    const result = compareStrategies({ investmentCents: 50_000_00, availableSavingsCents: 10_000_00, monthlyCostSavingsCents: 0, expectedAnnualReturn: 7, savingsAnnualRate: 2, loanAnnualRate: 5, loanTermYears: 5, horizonYears: 10 });
+    const result = compareStrategies({ investmentCents: 50_000_00, minimumLoanCents: 0, availableSavingsCents: 10_000_00, monthlyCostSavingsCents: 0, expectedAnnualReturn: 7, savingsAnnualRate: 2, loanAnnualRate: 5, loanTermYears: 5, horizonYears: 10 });
     expect(result.find((item) => item.key === 'savings')?.feasible).toBe(false);
     expect(result.find((item) => item.key === 'loan')?.monthlyLoanPaymentCents).toBeGreaterThan(0);
   });
 
   it('returns one time series for every strategy', () => {
-    const result = compareStrategies({ investmentCents: 20_000_00, availableSavingsCents: 20_000_00, monthlyCostSavingsCents: 0, expectedAnnualReturn: 8, savingsAnnualRate: 2, loanAnnualRate: 4, loanTermYears: 5, horizonYears: 10 });
+    const result = compareStrategies({ investmentCents: 20_000_00, minimumLoanCents: 0, availableSavingsCents: 20_000_00, monthlyCostSavingsCents: 0, expectedAnnualReturn: 8, savingsAnnualRate: 2, loanAnnualRate: 4, loanTermYears: 5, horizonYears: 10 });
     expect(result).toHaveLength(4);
     expect(result.every((item) => item.series.length === 121)).toBe(true);
   });
 
   it('credits monthly cost savings only to strategies that make the investment', () => {
-    const result = compareStrategies({ investmentCents: 5_000_00, availableSavingsCents: 5_000_00, monthlyCostSavingsCents: 100_00, expectedAnnualReturn: 0, savingsAnnualRate: 0, loanAnnualRate: 5, loanTermYears: 5, horizonYears: 10 });
+    const result = compareStrategies({ investmentCents: 5_000_00, minimumLoanCents: 0, availableSavingsCents: 5_000_00, monthlyCostSavingsCents: 100_00, expectedAnnualReturn: 0, savingsAnnualRate: 0, loanAnnualRate: 5, loanTermYears: 5, horizonYears: 10 });
     const savings = result.find((item) => item.key === 'savings');
     const wait = result.find((item) => item.key === 'wait');
     expect(savings?.totalSavingsBenefitCents).toBe(12_000_00);
@@ -125,18 +125,33 @@ describe('compareStrategies', () => {
   });
 
   it('charges only loan interest accrued inside the selected horizon', () => {
-    const result = compareStrategies({ investmentCents: 50_000_00, availableSavingsCents: 0, monthlyCostSavingsCents: 300_00, expectedAnnualReturn: 0, savingsAnnualRate: 0, loanAnnualRate: 5.11, loanTermYears: 20, horizonYears: 10 });
+    const result = compareStrategies({ investmentCents: 50_000_00, minimumLoanCents: 0, availableSavingsCents: 0, monthlyCostSavingsCents: 300_00, expectedAnnualReturn: 0, savingsAnnualRate: 0, loanAnnualRate: 5.11, loanTermYears: 20, horizonYears: 10 });
     const loan = result.find((item) => item.key === 'loan');
     expect(loan?.financingCostCents).toBeLessThan(29_925_70);
     expect(loan?.netAdvantageCents).toBe(loan?.series.at(-1)?.valueCents);
   });
 
   it('separates wealth break-even from cash amortization', () => {
-    const enpal = compareStrategies({ investmentCents: 33_000_00, availableSavingsCents: 0, monthlyCostSavingsCents: 300_00, expectedAnnualReturn: 0, savingsAnnualRate: 0, loanAnnualRate: 4.09, loanTermYears: 10, horizonYears: 20 }).find((item) => item.key === 'loan');
-    const sparkasse = compareStrategies({ investmentCents: 50_000_00, availableSavingsCents: 0, monthlyCostSavingsCents: 300_00, expectedAnnualReturn: 0, savingsAnnualRate: 0, loanAnnualRate: 5.11, loanTermYears: 20, horizonYears: 20 }).find((item) => item.key === 'loan');
+    const enpal = compareStrategies({ investmentCents: 33_000_00, minimumLoanCents: 0, availableSavingsCents: 0, monthlyCostSavingsCents: 300_00, expectedAnnualReturn: 0, savingsAnnualRate: 0, loanAnnualRate: 4.09, loanTermYears: 10, horizonYears: 20 }).find((item) => item.key === 'loan');
+    const sparkasse = compareStrategies({ investmentCents: 50_000_00, minimumLoanCents: 0, availableSavingsCents: 0, monthlyCostSavingsCents: 300_00, expectedAnnualReturn: 0, savingsAnnualRate: 0, loanAnnualRate: 5.11, loanTermYears: 20, horizonYears: 20 }).find((item) => item.key === 'loan');
     expect(enpal?.wealthBreakEvenMonth).toBe(1);
     expect(enpal?.amortizationMonth).toBe(135);
     expect(sparkasse?.wealthBreakEvenMonth).toBe(1);
     expect(sparkasse?.amortizationMonth).toBe(267);
+  });
+
+  it('keeps the contractual payment after an immediate repayment of excess loan proceeds', () => {
+    const plan = createFundingPlan([], { investmentCents: 33_000_00, minimumLoanCents: 50_000_00, expectedAnnualReturn: -5, loanAnnualRate: 5.11, loanTermYears: 20, useOwnFunds: false });
+    expect(plan.grossLoanCents).toBe(50_000_00);
+    expect(plan.immediateSpecialRepaymentCents).toBe(17_000_00);
+    expect(plan.loanCents).toBe(33_000_00);
+    expect(plan.monthlyLoanPaymentCents).toBe(33_302);
+    expect(plan.actualLoanTermMonths).toBeLessThan(240);
+    expect(plan.totalLoanInterestCents).toBeLessThan(29_925_70);
+
+    const loan = compareStrategies({ investmentCents: 33_000_00, minimumLoanCents: 50_000_00, availableSavingsCents: 0, monthlyCostSavingsCents: 300_00, expectedAnnualReturn: -5, savingsAnnualRate: 0, loanAnnualRate: 5.11, loanTermYears: 20, horizonYears: 20 }).find((item) => item.key === 'loan');
+    expect(loan?.grossLoanCents).toBe(50_000_00);
+    expect(loan?.immediateSpecialRepaymentCents).toBe(17_000_00);
+    expect(loan?.actualLoanTermMonths).toBe(plan.actualLoanTermMonths);
   });
 });
