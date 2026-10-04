@@ -1,4 +1,6 @@
 import type { Account, FundingPlan, InvestmentScenarioInput, ProjectionPoint, RecurringFlow, StrategyResult } from '../types.js';
+import { todayDate } from './dates.js';
+import { advanceDailyLoan, dailyLoanDueInMonth, dailyLoanInstallmentNumber, dateInMonth, hasDailyLoanSchedule, type DailyLoanState } from './loan-dates.js';
 
 const liabilityKinds = new Set<Account['kind']>(['loan', 'mortgage']);
 const appreciatingAssetKinds = new Set<Account['kind']>(['investment', 'property', 'company_share']);
@@ -8,17 +10,62 @@ const monthKey = (date: Date) => `${date.getUTCFullYear()}-${String(date.getUTCM
 const addMonths = (date: Date, amount: number) => new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + amount, 1));
 export const calculateOwnedValue = (totalValuationCents: number, ownershipPercent: number) => Math.round(totalValuationCents * ownershipPercent / 100);
 
+export function isInterestOnlyPhase(account: Account, date = new Date(), snapshotMonth = (account.balanceDate ?? todayDate(date)).slice(0, 7)) {
+  if (!liabilityKinds.has(account.kind) || account.interestOnlyMonths <= 0) return false;
+  if (hasDailyLoanSchedule(account)) {
+    const installment = dailyLoanInstallmentNumber(account, todayDate(date));
+    return installment > 0 && installment <= account.interestOnlyMonths;
+  }
+  const anchor = snapshotMonth;
+  const month = todayDate(date).slice(0, 7);
+  const elapsedMonths = (Number(month.slice(0, 4)) - Number(anchor.slice(0, 4))) * 12 + Number(month.slice(5, 7)) - Number(anchor.slice(5, 7));
+  return elapsedMonths >= 0 && elapsedMonths <= account.interestOnlyMonths;
+}
+
+// The phase counts months after the balance snapshot. At month zero this also
+// describes the first planned payment shown in the cashflow overview.
+export function loanPaymentForMonth(account: Account, openingBalanceCents: number, date = new Date(), snapshotMonth?: string) {
+  if (hasDailyLoanSchedule(account) && isInterestOnlyPhase(account, date)) {
+    const asOf = todayDate(date), snapshot = account.balanceDate ?? asOf;
+    const state: DailyLoanState = { principalCents: account.balanceCents, accruedInterestCents: 0, interestThrough: snapshot, eventsThrough: snapshot, paymentCount: 0 };
+    let payment = 0;
+    advanceDailyLoan(account, state, snapshot, dailyLoanDueInMonth(account, asOf), (_source, _date, requested) => requested, (_date, requested) => { payment = requested; });
+    return payment;
+  }
+  return isInterestOnlyPhase(account, date, snapshotMonth)
+    ? Math.max(0, Math.round(openingBalanceCents * (1 + account.annualRate / 100 / 12)) - openingBalanceCents)
+    : account.monthlyPaymentCents;
+}
+
 export function projectPortfolio(accounts: Account[], flows: RecurringFlow[], months: number, start = new Date()): ProjectionPoint[] {
   const balances = new Map(accounts.map((account) => [account.id, account.balanceCents]));
   const invested = new Map(accounts.map((account) => [account.id, account.balanceCents]));
-  const firstMonth = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), 1));
+  const firstMonth = new Date(`${todayDate(start).slice(0, 7)}-01T00:00:00Z`);
+  const anchors = new Map(accounts.map((account) => {
+    const snapshotDate = account.kind === 'property' || account.kind === 'company_share'
+      ? account.valuationDate : account.balanceDate;
+    return [account.id, snapshotDate?.slice(0, 7) ?? monthKey(firstMonth).slice(0, 7)];
+  }));
+  const firstSnapshotMonth = [...anchors.values()].reduce((earliest, date) => date < earliest ? date : earliest, monthKey(firstMonth).slice(0, 7));
+  const earliestMonth = new Date(`${firstSnapshotMonth}-01T00:00:00Z`);
+  const historicalMonths = (firstMonth.getUTCFullYear() - earliestMonth.getUTCFullYear()) * 12 + firstMonth.getUTCMonth() - earliestMonth.getUTCMonth();
+  const accountById = new Map(accounts.map((account) => [account.id, account]));
+  const snapshotDates = new Map(accounts.map((account) => [account.id, account.balanceDate ?? todayDate(start)]));
+  const beforeEarliestMonth = new Date(earliestMonth.getTime() - 86400000).toISOString().slice(0, 10);
+  const dailyLoans = new Map(accounts.filter(hasDailyLoanSchedule).map((account) => [account.id, {
+    principalCents: account.balanceCents, accruedInterestCents: 0, interestThrough: snapshotDates.get(account.id)!,
+    eventsThrough: beforeEarliestMonth, paymentCount: 0,
+  } satisfies DailyLoanState]));
   const points: ProjectionPoint[] = [];
 
-  for (let month = 0; month <= months; month += 1) {
+  for (let month = -historicalMonths; month <= months; month += 1) {
     const date = addMonths(firstMonth, month);
-    if (month > 0) {
+    const active = (account: Account) => date.toISOString().slice(0, 7) > anchors.get(account.id)!;
+    if (month > -historicalMonths) {
+      const openingBalances = new Map(balances);
       // Interest is applied first so payments amortize the actual monthly balance.
       for (const account of accounts) {
+        if (!active(account) || hasDailyLoanSchedule(account)) continue;
         const balance = balances.get(account.id) ?? 0;
         const projectedReturn = appreciatingAssetKinds.has(account.kind) ? account.expectedAnnualReturn : 0;
         balances.set(account.id, Math.max(0, Math.round(balance * (1 + (account.annualRate + projectedReturn) / 100 / 12))));
@@ -26,10 +73,10 @@ export function projectPortfolio(accounts: Account[], flows: RecurringFlow[], mo
 
       // Manual cashflows arrive before linked transfers, so salary can fund rates in the same month.
       for (const flow of flows) {
-        const active = flow.startDate <= monthKey(date) && (!flow.endDate || flow.endDate >= monthKey(date));
-        if (!active || flow.accountId === null || !balances.has(flow.accountId)) continue;
-        const account = accounts.find((item) => item.id === flow.accountId);
-        if (!account) continue;
+        const flowActive = flow.startDate <= monthKey(date) && (!flow.endDate || flow.endDate >= monthKey(date));
+        if (flow.origin === 'account' || !flowActive || flow.accountId === null) continue;
+        const account = accountById.get(flow.accountId);
+        if (!account || !active(account)) continue;
         const monthlyAmount = Math.round(flow.amountCents / monthsPerFlow[flow.frequency]);
         const balance = balances.get(account.id) ?? 0;
         const delta = liabilityKinds.has(account.kind)
@@ -45,8 +92,8 @@ export function projectPortfolio(accounts: Account[], flows: RecurringFlow[], mo
       for (const account of accounts) {
         if (liabilityKinds.has(account.kind) || account.annualBonusCents <= 0 || date.getUTCMonth() + 1 !== account.annualBonusMonth) continue;
         const targetId = account.annualBonusTargetAccountId ?? account.id;
-        const target = accounts.find((item) => item.id === targetId && !liabilityKinds.has(item.kind));
-        if (!target) continue;
+        const target = accountById.get(targetId);
+        if (!target || liabilityKinds.has(target.kind) || !active(target)) continue;
         balances.set(target.id, (balances.get(target.id) ?? 0) + account.annualBonusCents);
         invested.set(target.id, (invested.get(target.id) ?? 0) + account.annualBonusCents);
       }
@@ -54,23 +101,64 @@ export function projectPortfolio(accounts: Account[], flows: RecurringFlow[], mo
       // Savings rates are real account-to-account transfers and do not create net worth.
       for (const target of accounts) {
         if (liabilityKinds.has(target.kind) || target.monthlySavingsCents <= 0 || target.monthlySavingsSourceAccountId === null) continue;
-        const source = accounts.find((item) => item.id === target.monthlySavingsSourceAccountId && !liabilityKinds.has(item.kind));
-        if (!source || source.id === target.id) continue;
-        const amount = Math.min(balances.get(source.id) ?? 0, target.monthlySavingsCents);
-        balances.set(source.id, (balances.get(source.id) ?? 0) - amount);
-        balances.set(target.id, (balances.get(target.id) ?? 0) + amount);
+        const source = accountById.get(target.monthlySavingsSourceAccountId);
+        if (!source || liabilityKinds.has(source.kind) || source.id === target.id || (!active(source) && !active(target))) continue;
+        // A newer snapshot already includes its side of historical transfers. Its earlier
+        // liquidity is unknown, so it must neither be debited again nor cap older balances.
+        const amount = Math.min(active(source) ? balances.get(source.id) ?? 0 : Infinity, target.monthlySavingsCents);
+        if (active(source)) balances.set(source.id, (balances.get(source.id) ?? 0) - amount);
+        if (active(target)) balances.set(target.id, (balances.get(target.id) ?? 0) + amount);
       }
 
       // Credit payments move money from the selected source and reduce the linked liability.
       for (const debt of accounts) {
-        if (!liabilityKinds.has(debt.kind) || debt.monthlyPaymentCents <= 0 || debt.monthlyPaymentSourceAccountId === null) continue;
-        const source = accounts.find((item) => item.id === debt.monthlyPaymentSourceAccountId && !liabilityKinds.has(item.kind));
-        if (!source) continue;
-        const amount = Math.min(balances.get(source.id) ?? 0, balances.get(debt.id) ?? 0, debt.monthlyPaymentCents);
-        balances.set(source.id, (balances.get(source.id) ?? 0) - amount);
-        balances.set(debt.id, (balances.get(debt.id) ?? 0) - amount);
+        if (!liabilityKinds.has(debt.kind) || hasDailyLoanSchedule(debt) || debt.monthlyPaymentSourceAccountId === null) continue;
+        const paymentCents = loanPaymentForMonth(debt, openingBalances.get(debt.id) ?? 0, date, anchors.get(debt.id));
+        if (paymentCents <= 0) continue;
+        const source = accountById.get(debt.monthlyPaymentSourceAccountId);
+        if (!source || liabilityKinds.has(source.kind) || (!active(source) && !active(debt))) continue;
+        const amount = Math.min(active(source) ? balances.get(source.id) ?? 0 : Infinity, active(debt) ? balances.get(debt.id) ?? 0 : Infinity, paymentCents);
+        if (active(source)) balances.set(source.id, (balances.get(source.id) ?? 0) - amount);
+        if (active(debt)) balances.set(debt.id, (balances.get(debt.id) ?? 0) - amount);
+      }
+
+      // Dated one-off repayments follow interest and the regular installment.
+      // Each snapshot already includes its own side of earlier payments.
+      for (const debt of accounts) {
+        if (!liabilityKinds.has(debt.kind) || hasDailyLoanSchedule(debt)) continue;
+        for (const repayment of debt.specialRepayments ?? []) {
+          if (!repayment.date || repayment.date.slice(0, 7) !== monthKey(date).slice(0, 7)) continue;
+          const source = repayment.sourceAccountId === null ? undefined : accountById.get(repayment.sourceAccountId);
+          if (repayment.sourceAccountId !== null && (!source || !cashAssetKinds.has(source.kind) || source.id === debt.id)) continue;
+          if (!active(debt) && (!source || !active(source))) continue;
+          const amount = Math.min(repayment.amountCents,
+            active(debt) ? balances.get(debt.id) ?? 0 : Infinity,
+            source && active(source) ? balances.get(source.id) ?? 0 : Infinity);
+          if (source && active(source)) balances.set(source.id, (balances.get(source.id) ?? 0) - amount);
+          if (active(debt)) balances.set(debt.id, (balances.get(debt.id) ?? 0) - amount);
+        }
       }
     }
+    // Dated loans use actual due dates. The current point stops today; future
+    // points stop on the same calendar day, clamped to the end of shorter months.
+    const through = month < 0
+      ? dateInMonth(date.getUTCFullYear(), date.getUTCMonth(), 31)
+      : dateInMonth(date.getUTCFullYear(), date.getUTCMonth(), Number(todayDate(start).slice(8, 10)));
+    for (const [id, state] of dailyLoans) {
+      const debt = accountById.get(id)!;
+      state.principalCents = balances.get(id)!;
+      advanceDailyLoan(debt, state, snapshotDates.get(id)!, through, (sourceId, paymentDate, requested, debtActive) => {
+        const source = sourceId === null ? undefined : accountById.get(sourceId);
+        if (sourceId !== null && (!source || !cashAssetKinds.has(source.kind) || source.id === debt.id)) return 0;
+        const sourceActive = source && paymentDate > snapshotDates.get(source.id)!;
+        if (!debtActive && !sourceActive) return 0;
+        const amount = Math.min(Math.max(0, requested), sourceActive ? balances.get(source!.id)! : Infinity);
+        if (sourceActive) balances.set(source!.id, balances.get(source!.id)! - amount);
+        return amount;
+      });
+      balances.set(id, state.principalCents);
+    }
+    if (month < 0) continue;
     let assetsCents = 0;
     let debtsCents = 0;
     let investedCents = 0;
@@ -80,7 +168,8 @@ export function projectPortfolio(accounts: Account[], flows: RecurringFlow[], mo
       else { assetsCents += value; investedCents += invested.get(account.id) ?? 0; }
     }
     const accountBalances = accounts.map((account) => ({ accountId: account.id, balanceCents: balances.get(account.id) ?? 0 }));
-    points.push({ date: monthKey(date), assetsCents, debtsCents, netWorthCents: assetsCents - debtsCents, investedCents, accountBalances });
+    points.push({ date: monthKey(date), assetsCents, debtsCents, netWorthCents: assetsCents - debtsCents, investedCents, accountBalances,
+      ...(dailyLoans.size ? { accountAccruedInterests: [...dailyLoans].map(([accountId, state]) => ({ accountId, interestCents: Math.round(state.accruedInterestCents) })) } : {}) });
   }
   return points;
 }
@@ -140,8 +229,10 @@ const createLoanDetails = (requiredLoanCents: number, minimumLoanCents: number, 
   };
 };
 
-export function createFundingPlan(accounts: Account[], input: { investmentCents: number; minimumLoanCents?: number; expectedAnnualReturn: number; loanAnnualRate: number; loanTermYears: number; useOwnFunds?: boolean }, asOf = new Date()): FundingPlan {
-  const asOfDate = asOf.toISOString().slice(0, 10);
+export function createFundingPlan(accounts: Account[], input: { investmentCents: number; minimumLoanCents?: number; expectedAnnualReturn: number; loanAnnualRate: number; loanTermYears: number; useOwnFunds?: boolean }, asOf = new Date(), flows: RecurringFlow[] = []): FundingPlan {
+  const asOfDate = todayDate(asOf);
+  const currentBalances = new Map(projectPortfolio(accounts, flows, 0, asOf)[0]!.accountBalances.map((item) => [item.accountId, item.balanceCents]));
+  accounts = accounts.map((account) => ({ ...account, balanceCents: currentBalances.get(account.id)! }));
   const candidates = input.useOwnFunds === false ? [] : accounts.filter((account) => cashAssetKinds.has(account.kind) && account.fundingEligible && account.balanceCents > 0);
   const deferredAccounts = candidates.filter((account) => account.fundingAvailableFrom && account.fundingAvailableFrom > asOfDate).map((account) => ({
     accountId: account.id, name: account.name, balanceCents: account.balanceCents, availableFrom: account.fundingAvailableFrom!,

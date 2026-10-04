@@ -1,16 +1,28 @@
 export const ACCOUNT_KINDS = ['checking', 'savings', 'investment', 'property', 'company_share', 'loan', 'mortgage'] as const;
 export type AccountKind = (typeof ACCOUNT_KINDS)[number];
+export type SpecialRepayment = {
+  date: string | null;
+  amountCents: number;
+  sourceAccountId: number | null;
+};
 export type Account = {
   id: number;
   name: string;
   kind: AccountKind;
   balanceCents: number;
+  balanceDate: string | null;
+  currentBalanceCents?: number;
+  currentMonthlyPaymentCents?: number;
+  currentAccruedInterestCents?: number;
+  monthlyPaymentDay?: number | null;
   monthlySavingsCents: number;
   monthlySavingsSourceAccountId: number | null;
   annualBonusCents: number;
   annualBonusMonth: number;
   annualBonusTargetAccountId: number | null;
   monthlyPaymentCents: number;
+  interestOnlyMonths: number;
+  specialRepayments: SpecialRepayment[];
   monthlyPaymentSourceAccountId: number | null;
   annualRate: number;
   expectedAnnualReturn: number;
@@ -29,6 +41,8 @@ export const FLOW_KINDS = ['income', 'expense'] as const;
 export const FREQUENCIES = ['weekly', 'monthly', 'quarterly', 'yearly'] as const;
 export type FlowKind = (typeof FLOW_KINDS)[number];
 export type Frequency = (typeof FREQUENCIES)[number];
+export const EXPENSE_GROUPS = ['auto', 'fixed', 'variable', 'optional', 'unassigned'] as const;
+export type ExpenseGroup = (typeof EXPENSE_GROUPS)[number];
 export type RecurringFlow = {
   id: number;
   name: string;
@@ -40,6 +54,7 @@ export type RecurringFlow = {
   accountId: number | null;
   sourceAccountId: number | null;
   category: string;
+  expenseGroup?: ExpenseGroup;
   origin: 'manual' | 'account';
   readOnly: boolean;
   createdAt: string;
@@ -53,6 +68,7 @@ export type ProjectionPoint = {
   netWorthCents: number;
   investedCents: number;
   accountBalances: { accountId: number; balanceCents: number }[];
+  accountAccruedInterests?: { accountId: number; interestCents: number }[];
 };
 
 export type InvestmentScenarioInput = {

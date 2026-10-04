@@ -1,5 +1,7 @@
 const request = async <T>(url: string, options?: RequestInit): Promise<T> => {
-  const response = await fetch(url, { ...options, headers: { 'Content-Type': 'application/json', ...options?.headers } });
+  const headers = new Headers(options?.headers);
+  if (options?.body != null && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
+  const response = await fetch(url, { ...options, headers });
   if (!response.ok) {
     const error = await response.json().catch(() => ({ message: 'Die Anfrage ist fehlgeschlagen.' })) as { message?: string };
     throw new Error(error.message ?? 'Die Anfrage ist fehlgeschlagen.');

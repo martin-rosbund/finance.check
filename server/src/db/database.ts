@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
+import { migrateBalanceDates } from './balance-date-migration.js';
 
 const databasePath = path.resolve(process.cwd(), process.env.DATABASE_PATH ?? './data/finance-check.db');
 fs.mkdirSync(path.dirname(databasePath), { recursive: true });
@@ -185,6 +186,21 @@ const investmentScenarioIndex = db.prepare("SELECT sql FROM sqlite_schema WHERE 
 if (!investmentScenarioIndex?.sql.includes('id DESC')) {
   db.exec('DROP INDEX IF EXISTS idx_investment_scenarios_updated_at');
   db.exec('CREATE INDEX idx_investment_scenarios_updated_at ON investment_scenarios(updated_at DESC, id DESC)');
+}
+migrateBalanceDates(db, databasePath);
+const loanColumns = db.prepare('PRAGMA table_info(accounts)').all() as { name: string }[];
+if (!loanColumns.some((column) => column.name === 'monthly_payment_day')) {
+  db.exec('ALTER TABLE accounts ADD COLUMN monthly_payment_day INTEGER CHECK (monthly_payment_day BETWEEN 1 AND 31)');
+}
+if (!loanColumns.some((column) => column.name === 'interest_only_months')) {
+  db.exec('ALTER TABLE accounts ADD COLUMN interest_only_months INTEGER NOT NULL DEFAULT 0 CHECK (interest_only_months BETWEEN 0 AND 600)');
+}
+if (!loanColumns.some((column) => column.name === 'special_repayments_json')) {
+  db.exec("ALTER TABLE accounts ADD COLUMN special_repayments_json TEXT NOT NULL DEFAULT '[]'");
+}
+const flowColumns = db.prepare('PRAGMA table_info(recurring_flows)').all() as { name: string }[];
+if (!flowColumns.some((column) => column.name === 'expense_group')) {
+  db.exec("ALTER TABLE recurring_flows ADD COLUMN expense_group TEXT NOT NULL DEFAULT 'auto' CHECK (expense_group IN ('auto','fixed','variable','optional','unassigned'))");
 }
 db.pragma('optimize');
 
