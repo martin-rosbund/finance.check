@@ -44,6 +44,7 @@ Alternativ in Visual Studio Code:
 - Eigener Reiter „Cashflow-Analyse“ mit monatlichen Einnahmen, Sparüberträgen, Sparquote, Ausgaben und verbleibendem Budget; Aufteilung in Pflichtausgaben, variablen Grundbedarf und verzichtbare/kündbare Posten mit Kategorie-Vorauswahl und dauerhaft änderbarer Gruppierung
 - Monatsgenaue Vermögens-, Schulden- und Nettovermögensprojektion bis 30 Jahre in der Oberfläche
 - Vollständige Kontenübersicht auf dem Dashboard und kontengenaue Prognosewerte im Diagramm-Cursor
+- Gelbe Kurve für liquide Mittel in der Vermögensentwicklung: Giro-, Spar- und Investmentkonten einschließlich Bausparguthaben, ohne Immobilien und Firmenanteile; Monatssumme auch im Diagramm-Cursor
 - Break-even-Datum für positives Nettovermögen
 - Konkreter Finanzierungsplan aus den tatsächlich freigegebenen Konten, priorisiert nach dem niedrigsten entgangenen Zins beziehungsweise der niedrigsten entgangenen Depot-Rendite
 - Erwartete monatliche Kostenersparnis als Investitionsnutzen, einschließlich kumulierter Einsparung und monatlichem Saldo
